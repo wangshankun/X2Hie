@@ -66,10 +66,17 @@ class Transgraph(object):
         for sub_idx, sub in enumerate(sub_digraphs):
             #print(list(nx.topological_sort(sub)))
             sub_name = "{}_{}".format("subgraph", str(sub_idx))
-            sub_t    = Subgraph(sub)#获取子图节点信息
+            sub_inputs  = []
+            sub_outputs = []
+            sub_all_nodes = list(nx.topological_sort(sub))
+            for node in sub_all_nodes:
+                if node in self.sub_input_nodes:
+                    sub_inputs.append(node)
+                if node in self.sub_output_nodes:
+                    sub_outputs.append(node)                    
 
             #子图权重切割出来，并导出
-            sub_model = CutGraph().cut_in(self.model, start_n_name=sub_t.root_nodes, end_n_name=sub_t.leaf_nodes)
+            sub_model = CutGraph().cut_in(self.model, start_n_name=sub_inputs, end_n_name=sub_outputs)
             sub_model_name = "{}.onnx".format(sub_name)
             onnx.save(sub_model, sub_model_name)
             sub_onnx_graph = sub_model.graph
@@ -113,7 +120,7 @@ class Transgraph(object):
             )
             self.model.graph.node.append(new_node)#新节点插入图中
             #删除旧节点
-            useless_nodes = [self.node_dict[i] for i in sub_t.all_nodes]
+            useless_nodes = [self.node_dict[i] for i in sub_all_nodes]
             self.remove_useless(useless_nodes)
 
         onnx.save(self.model, "fuse_graph.onnx")#保存融合后的模型
@@ -186,6 +193,8 @@ class Transgraph(object):
         self.node_by_input = collections.defaultdict(list)
         self.node_by_output = {}
         self.nodes_io_info = {}
+        self.sub_input_nodes = []#切割后的所有的子图中应该为input的节点名
+        self.sub_output_nodes = []#切割后的所有的子图中应该为output的节点名
 
         # update
         self.node_dict = {n.name: n for n in self.model.graph.node}
@@ -281,14 +290,13 @@ class Transgraph(object):
             sub_t.leaf_nodes = self._topological_sort(sub_t.leaf_nodes)
             #print(sub_t.root_nodes)
             #print(sub_t.leaf_nodes)
-            print("====================SUB!!=================")
             for leaf in sub_t.leaf_nodes:
                 for root in sub_t.root_nodes:#切除环路过程:
-                    while nx.has_path(tmp_di_graph, leaf, root):#如果npu子图的叶子到根有路
+                    while nx.has_path(tmp_di_graph, leaf, root):#如果npu子图的叶子到根有路,证明子网通过CPU有路,会成环;
                         #print("%s to % has_path"%(leaf, root))
                         #这里采用无环图的目的是为了从叶子节点出发找出回路中在整图拓扑逻辑中第一个节点
                         all_paths = list(nx.all_shortest_paths(tmp_di_graph.to_undirected(), leaf, root))
-                        for path in all_paths:#记录切断叶子output环路
+                        for path in all_paths:#
                             topo_1_leaf = self._topological_sort(path)[0]#根据整图逻辑排序，出现在路径中的第一个节点
                             top_down_paths = list(nx.all_shortest_paths(tmp_di_graph.to_undirected(), topo_1_leaf, root))
                             for td_path in top_down_paths:
@@ -307,6 +315,14 @@ class Transgraph(object):
                                             remove_edges.append(edge)
                                         break
 
+            #切除子图叶子与output的边; 上面切除环路的循环逻辑中也会切掉部分叶子节点(node == leaf)情况
+            for leaf in sub_t.leaf_nodes:
+                for i in self.nodes_io_info[leaf]['output']:
+                    edge   = (leaf, i)
+                    if edge in tmp_di_graph.edges:
+                        tmp_di_graph.remove_edge(*edge)
+                        remove_edges.append(edge)
+
             #切除子图根与input的边；
             for root in sub_t.root_nodes:
                 for i in self.nodes_io_info[root]['input']:
@@ -315,12 +331,15 @@ class Transgraph(object):
                         tmp_di_graph.remove_edge(*edge)
                         remove_edges.append(edge)
 
-        print(remove_edges)
+        #print(remove_edges)
+        for edge in remove_edges:
+            self.sub_input_nodes.append(edge[1])#被别人断掉的节点，是本图的输入节点
+            self.sub_output_nodes.append(edge[0])#主动断开别人路的节点，是上个图的输出节点
 
         npu_subs = []
         subs = self._filter_subgraphs(tmp_di_graph)#找出所有处理后的子图
         for sub in subs:
-            print(len(subs))
+            #print(len(subs))
             #print(list(nx.topological_sort(sub)))
             if self._is_all_npu_node(list(nx.topological_sort(sub))):#只返回全部NPU节点的子图
                 npu_subs.append(sub)
