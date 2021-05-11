@@ -272,37 +272,56 @@ class Transgraph(object):
         filter_sub_digraphs = self._filter_subgraphs(npu_dig_subgraphs)
         #处理子图(可能存在于子图之外的环路，需要继续切割子图)
         tmp_di_graph = copy.deepcopy(self.di_graph)#切掉子图所有环路临时需要的整图
+        remove_edges = []
         for sub in filter_sub_digraphs:
+            #print(list(nx.topological_sort(sub)))
             sub_t    = Subgraph(sub)
             #子图的根、叶子节点按照整网拓扑排序
             sub_t.root_nodes = self._topological_sort(sub_t.root_nodes)
             sub_t.leaf_nodes = self._topological_sort(sub_t.leaf_nodes)
             #print(sub_t.root_nodes)
             #print(sub_t.leaf_nodes)
+            print("====================SUB!!=================")
             for leaf in sub_t.leaf_nodes:
-                for root in sub_t.root_nodes:
-                    while nx.has_path(tmp_di_graph, leaf, root):#如果npu子图的叶子到根有路，肯定是CPU的通路
+                for root in sub_t.root_nodes:#切除环路过程:
+                    while nx.has_path(tmp_di_graph, leaf, root):#如果npu子图的叶子到根有路
                         #print("%s to % has_path"%(leaf, root))
+                        #这里采用无环图的目的是为了从叶子节点出发找出回路中在整图拓扑逻辑中第一个节点
                         all_paths = list(nx.all_shortest_paths(tmp_di_graph.to_undirected(), leaf, root))
                         for path in all_paths:#记录切断叶子output环路
-                            topo_1_leaf = self._topological_sort(path)[0]
-                            for i in self.nodes_io_info[topo_1_leaf]['output']:
-                                edge   = (topo_1_leaf, i)
-                                #print(edge)
-                                if edge in tmp_di_graph.edges:
-                                    tmp_di_graph.remove_edge(*edge)
-            #记录子图根与input的边切断；
+                            topo_1_leaf = self._topological_sort(path)[0]#根据整图逻辑排序，出现在路径中的第一个节点
+                            top_down_paths = list(nx.all_shortest_paths(tmp_di_graph.to_undirected(), topo_1_leaf, root))
+                            for td_path in top_down_paths:
+                                for idx, node in enumerate(td_path):
+                                    if node == leaf:#如果是等于输入的叶子节点，那么直接断！
+                                        edge = (td_path[0], td_path[1])
+                                        if edge in tmp_di_graph.edges:
+                                            tmp_di_graph.remove_edge(*edge)
+                                            remove_edges.append(edge)
+                                        break
+                                    #从底向上有向图找，遇到第一个通的节点就是要打断的节点,然后break出来
+                                    if (nx.has_path(tmp_di_graph, root, node)):#如果存在那么idx一定大于零
+                                        edge = (td_path[idx - 1], td_path[idx])
+                                        if edge in tmp_di_graph.edges:
+                                            tmp_di_graph.remove_edge(*edge)
+                                            remove_edges.append(edge)
+                                        break
+
+            #切除子图根与input的边；
             for root in sub_t.root_nodes:
                 for i in self.nodes_io_info[root]['input']:
                     edge   = (i, root)
-                    #print(edge)
                     if edge in tmp_di_graph.edges:
                         tmp_di_graph.remove_edge(*edge)
+                        remove_edges.append(edge)
+
+        print(remove_edges)
 
         npu_subs = []
         subs = self._filter_subgraphs(tmp_di_graph)#找出所有处理后的子图
         for sub in subs:
-            list(nx.topological_sort(sub))
+            print(len(subs))
+            #print(list(nx.topological_sort(sub)))
             if self._is_all_npu_node(list(nx.topological_sort(sub))):#只返回全部NPU节点的子图
                 npu_subs.append(sub)
         return npu_subs
