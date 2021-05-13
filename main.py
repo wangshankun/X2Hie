@@ -34,6 +34,7 @@ ONNX_DTYPE = {
 def main(argv):
     parser = argparse.ArgumentParser(description="ModelTrans && SubgraphFuse.")
     parser.add_argument("--src_model", required=True, help="Onnx model file path.")
+    parser.add_argument("--dst_model", required=True, help="Output mode name.")
     parser.add_argument('--inputs', required=True, nargs='*', 
                        help="""Input tensors info: "input_name;elem_type;dim0;dim1;dim2;dim3" 
                                \r\n Example: "in0;1;1;224;224;3" "in1;1;1;32;32;128" """)
@@ -83,11 +84,16 @@ def main(argv):
     #获取目标硬件支持的op list
     npu_op_list_file = "hardware/{}/support_op_list.txt".format(args.hd_type)
     npu_op_types = set()
-    for line in open(npu_op_list_file): 
-        line=line.strip('\n')
-        npu_op_types.add(line)
+    if os.path.exists(npu_op_list_file):
+        for line in open(npu_op_list_file): 
+            line=line.strip('\n')
+            npu_op_types.add(line)
+    else:
+        print("hardware type not found!")
+        return
 
-    sf = Transgraph(inferred_model, args.tensor_format, npu_op_types, args.max_sub_num, args.min_node_num)
+    sf = Transgraph(inferred_model, args.dst_model, args.hd_type, 
+                    args.tensor_format, npu_op_types, args.max_sub_num, args.min_node_num)
     sf.exe()
 
 if __name__ == "__main__":

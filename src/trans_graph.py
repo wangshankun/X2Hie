@@ -39,8 +39,11 @@ class Subgraph(object):
         self.mid_nodes =list(set(self.all_nodes) - set(self.root_nodes) - set(self.leaf_nodes))
 
 class Transgraph(object):
-    def __init__(self, model, tensor_format, npu_op_types, max_sub_num = 3, min_node_num = 10):
+    def __init__(self, model, dst_model, hd_type, 
+                       tensor_format, npu_op_types, max_sub_num = 3, min_node_num = 10):
         self.model = model
+        self.dst_model = dst_model
+        self.hd_type = hd_type
         self.tensor_format = tensor_format
         self.npu_op_types = npu_op_types
         self.max_sub_num = max_sub_num
@@ -63,9 +66,11 @@ class Transgraph(object):
     def exe(self):
         sub_digraphs = self._get_sub_digraphs()
         print("=========valid sub num:%d============"%len(sub_digraphs))
+
+        out_name = "{}_{}".format(self.dst_model, self.hd_type)
         for sub_idx, sub in enumerate(sub_digraphs):
             #print(list(nx.topological_sort(sub)))
-            sub_name = "{}_{}".format("subgraph", str(sub_idx))
+            sub_name = "{}_{}_{}".format(out_name, "sub", str(sub_idx))
             sub_inputs  = []
             sub_outputs = []
             sub_all_nodes = list(nx.topological_sort(sub))
@@ -116,14 +121,16 @@ class Transgraph(object):
                 outputs=outputs_,
                 name=sub_name,
                 inputs_info=inputs_info_,
-                outputs_info=outputs_info_
+                outputs_info=outputs_info_,
+                lib_path=sub_name + ".so",#节点的运行的库
+                model_file=sub_name + ".bin"#节点运行需要的硬件平台模型
             )
             self.model.graph.node.append(new_node)#新节点插入图中
             #删除旧节点
             useless_nodes = [self.node_dict[i] for i in sub_all_nodes]
             self.remove_useless(useless_nodes)
 
-        onnx.save(self.model, "fuse_graph.onnx")#保存融合后的模型
+        onnx.save(self.model, out_name + "_fuse.onnx")#保存融合后的模型
 
     def remove_useless(self, nodes):
         '''
